@@ -1,11 +1,16 @@
 # Railway build of Agent Vault.
 #
-# Identical to ./Dockerfile except for two platform requirements:
-#   1. No `VOLUME` instruction — Railway rejects it ("use Railway Volumes").
-#      Persistence comes from a Railway Volume mounted at /data instead.
-#   2. The server binds `::` (dual-stack) rather than 0.0.0.0, so the MITM
-#      proxy on 14322 is also reachable over Railway's IPv6-only private
-#      network at <service>.railway.internal.
+# Identical to ./Dockerfile except that it drops the `VOLUME` instruction,
+# which Railway rejects ("use Railway Volumes"). Persistence comes from a
+# Railway Volume mounted at /data instead; the service also needs
+# RAILWAY_RUN_UID=0, since that volume is mounted root-owned and the image's
+# unprivileged user cannot create /data/.agent-vault under it.
+#
+# The listeners stay on 0.0.0.0. Railway's private network is IPv6-only and
+# would want `--host ::`, but `cmd/server.go` builds its listen address with
+# fmt.Sprintf("%s:%d", host, port), so `::` yields the invalid `:::14321`
+# and `[::]` breaks the MITM listener's net.JoinHostPort. Public networking
+# (service domain + TCP proxy) works over 0.0.0.0.
 
 # ---- Frontend build ----
 FROM node:26-alpine@sha256:e88a35be04478413b7c71c455cd9865de9b9360e1f43456be5951032d7ac1a66 AS frontend
@@ -53,4 +58,4 @@ EXPOSE 14322
 USER agentvault
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
-CMD ["server", "--host", "::", "--port", "14321"]
+CMD ["server", "--host", "0.0.0.0", "--port", "14321"]
