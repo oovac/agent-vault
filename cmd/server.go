@@ -85,7 +85,7 @@ var serverCmd = &cobra.Command{
 		logLevelChanged := cmd.Flags().Changed("log-level")
 		maxRespBytes, _ := cmd.Flags().GetInt64("max-response-bytes")
 		maxReqBytes, _ := cmd.Flags().GetInt64("max-request-bytes")
-		addr := fmt.Sprintf("%s:%d", host, port)
+		addr := net.JoinHostPort(host, strconv.Itoa(port))
 
 		logLevel, err := resolveLogLevel(logLevelFlag, logLevelChanged)
 		if err != nil {
