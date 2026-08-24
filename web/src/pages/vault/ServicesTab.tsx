@@ -543,6 +543,7 @@ function ServiceModal({
     if (!id) return;
     const tpl = catalogSnapshot.find((t) => t.id === id);
     if (!tpl) return;
+    setName(tpl.id);
     setPattern(tpl.host);
     setAuthType(tpl.auth_type as AuthType);
     if (tpl.auth_type === "bearer") setToken(tpl.suggested_credential_key);
