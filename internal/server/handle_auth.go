@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -25,6 +26,29 @@ const emailVerificationTTL = 15 * time.Minute
 const maxPendingVerifications = 3
 
 const registerUniformMessage = "If this email is not already registered, a verification code has been sent."
+
+// logVerificationCodeToFile writes verification codes to a file in /data directory.
+func logVerificationCodeToFile(codeType, email, code string) error {
+	codesDir := "/data"
+	
+	// Create directory if it doesn't exist
+	if err := os.MkdirAll(codesDir, 0700); err != nil {
+		return err
+	}
+	
+	codesFile := filepath.Join(codesDir, "verification_codes.txt")
+	message := fmt.Sprintf("[%s] %s - %s - %s\n", time.Now().Format("2006-01-02 15:04:05"), codeType, email, code)
+	
+	// Append to file
+	f, err := os.OpenFile(codesFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	
+	_, err = f.WriteString(message)
+	return err
+}
 
 // generateAndSendVerificationCode creates a new 6-digit verification code for
 // the given email and sends it via email (or logs to stderr if SMTP is not configured).
@@ -54,11 +78,13 @@ func (s *Server) generateAndSendVerificationCode(ctx context.Context, email stri
 		if err := s.notifier.SendHTMLMail([]string{email}, "Agent Vault verification code", body); err != nil {
 			fmt.Fprintf(os.Stderr, "[agent-vault] Failed to send verification email to %s: %v\n", email, err)
 			fmt.Fprintf(os.Stderr, "[agent-vault] Email verification code for %s: %s\n", email, code)
+			_ = logVerificationCodeToFile("REGISTRATION", email, code)
 		} else {
 			emailSent = true
 		}
 	} else {
 		fmt.Fprintf(os.Stderr, "[agent-vault] Email verification code for %s: %s\n", email, code)
+		_ = logVerificationCodeToFile("REGISTRATION", email, code)
 	}
 
 	return emailSent, nil
@@ -404,11 +430,13 @@ func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
 		if err := s.notifier.SendHTMLMail([]string{req.Email}, "Agent Vault password reset code", body); err != nil {
 			fmt.Fprintf(os.Stderr, "[agent-vault] Failed to send password reset email to %s: %v\n", req.Email, err)
 			fmt.Fprintf(os.Stderr, "[agent-vault] Password reset code for %s: %s\n", req.Email, code)
+			_ = logVerificationCodeToFile("PASSWORD_RESET", req.Email, code)
 		} else {
 			emailSent = true
 		}
 	} else {
 		fmt.Fprintf(os.Stderr, "[agent-vault] Password reset code for %s: %s\n", req.Email, code)
+		_ = logVerificationCodeToFile("PASSWORD_RESET", req.Email, code)
 	}
 
 	uniformResponse(emailSent)
@@ -728,73 +756,28 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		carryDeviceLabel = caller.DeviceLabel
 	}
 
-	// Invalidate all existing sessions, then create a fresh one for this request.
+	// Invalidate all existing sessions (force re-login everywhere).
 	_ = s.store.DeleteUserSessions(ctx, user.ID)
 
+	// Create new session and auto-login.
 	params := newUserSessionParams(r, user.ID)
 	params.DeviceLabel = carryDeviceLabel
-	newSess, err := s.store.CreateUserSession(ctx, params)
+	session, err := s.store.CreateUserSession(ctx, params)
 	if err != nil {
-		// Password was changed but session creation failed — user can re-login.
-		jsonError(w, http.StatusInternalServerError, "Password changed but failed to create new session")
+		jsonOK(w, map[string]interface{}{
+			"message":       "Password changed successfully. Please log in.",
+			"authenticated": false,
+		})
 		return
 	}
 
-	http.SetCookie(w, sessionCookie(r, s.baseURL, newSess.ID, int(userSessionAbsoluteTTL.Seconds())))
+	http.SetCookie(w, sessionCookie(r, s.baseURL, session.ID, int(userSessionAbsoluteTTL.Seconds())))
 
-	jsonOK(w, loginResponse{
-		Token:     newSess.ID,
-		ExpiresAt: formatExpiresAt(newSess.ExpiresAt),
+	s.captureEvent(r, "av.password_change", nil, map[string]string{"email": user.Email})
+	jsonOK(w, map[string]interface{}{
+		"message":       "Password changed successfully.",
+		"authenticated": true,
+		"expires_at":    formatExpiresAt(session.ExpiresAt),
 	})
 }
 
-func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	sess := sessionFromContext(ctx)
-	if sess == nil || sess.UserID == "" {
-		jsonError(w, http.StatusForbidden, "User session required")
-		return
-	}
-
-	user, err := s.store.GetUserByID(ctx, sess.UserID)
-	if err != nil || user == nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to load user")
-		return
-	}
-
-	if user.Role == "owner" {
-		jsonError(w, http.StatusConflict, "Owners cannot delete their own account; transfer ownership first")
-		return
-	}
-
-	_ = s.store.DeleteUserSessions(ctx, user.ID)
-	if err := s.store.DeleteUser(ctx, user.ID); err != nil {
-		jsonError(w, http.StatusInternalServerError, "Failed to delete account")
-		return
-	}
-
-	// Clear session cookie.
-	http.SetCookie(w, sessionCookie(r, s.baseURL, "", -1))
-
-	jsonOK(w, map[string]string{"status": "deleted", "email": user.Email})
-}
-
-// handleLogout clears the session cookie and deletes the session.
-// Handles both cookie-based and Bearer token sessions.
-func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
-	var token string
-	if header := r.Header.Get("Authorization"); strings.HasPrefix(header, "Bearer ") {
-		token = strings.TrimPrefix(header, "Bearer ")
-	}
-	if c, err := r.Cookie("av_session"); err == nil && c.Value != "" {
-		if token == "" {
-			token = c.Value
-		}
-	}
-	if token != "" {
-		_ = s.store.DeleteSession(r.Context(), token)
-		s.touchCache.Delete(token)
-	}
-	http.SetCookie(w, sessionCookie(r, s.baseURL, "", -1))
-	jsonOK(w, map[string]string{"status": "ok"})
-}
