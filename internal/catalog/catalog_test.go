@@ -68,6 +68,40 @@ func TestCatalogTemplatesAreValidServices(t *testing.T) {
 	}
 }
 
+func TestRequestedProviderTemplates(t *testing.T) {
+	tests := []struct {
+		id       string
+		name     string
+		host     string
+		authType string
+		key      string
+		header   string
+	}{
+		{id: "huggingface", name: "Hugging Face", host: "router.huggingface.co", authType: "bearer", key: "HF_TOKEN"},
+		{id: "cerebras", name: "Cerebras", host: "api.cerebras.ai/v1/*", authType: "bearer", key: "CEREBRAS_API_KEY"},
+		{id: "sambanova", name: "SambaNova", host: "api.sambanova.ai/v1/*", authType: "bearer", key: "SAMBANOVA_API_KEY"},
+		{id: "railway", name: "Railway", host: "backboard.railway.com/graphql/v2", authType: "bearer", key: "RAILWAY_API_TOKEN"},
+		{id: "kimi", name: "Kimi", host: "api.moonshot.ai/v1/*", authType: "bearer", key: "MOONSHOT_API_KEY"},
+		{id: "kimi-code", name: "Kimi Code", host: "api.kimi.com/coding/v1/*", authType: "bearer", key: "KIMI_CODE_API_KEY"},
+		{id: "z-ai", name: "Z.AI", host: "api.z.ai/api/paas/v4/*", authType: "bearer", key: "ZAI_API_KEY"},
+		{id: "tavily", name: "Tavily", host: "api.tavily.com", authType: "bearer", key: "TAVILY_API_KEY"},
+		{id: "replicate", name: "Replicate", host: "api.replicate.com/v1/*", authType: "bearer", key: "REPLICATE_API_TOKEN"},
+		{id: "elevenlabs", name: "ElevenLabs", host: "api.elevenlabs.io/v1/*", authType: "api-key", key: "ELEVENLABS_API_KEY", header: "xi-api-key"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.id, func(t *testing.T) {
+			tpl := GetByID(tt.id)
+			if tpl == nil {
+				t.Fatalf("template %q not found", tt.id)
+			}
+			if tpl.Name != tt.name || tpl.Host != tt.host || tpl.AuthType != tt.authType || tpl.SuggestedCredentialKey != tt.key || tpl.Header != tt.header {
+				t.Fatalf("template mismatch: got %+v", *tpl)
+			}
+		})
+	}
+}
+
 // The Telegram bot token travels as a path segment, and its real
 // `<id>:<token>` shape must survive path escaping intact.
 func TestTelegramTemplateRewritesPath(t *testing.T) {
